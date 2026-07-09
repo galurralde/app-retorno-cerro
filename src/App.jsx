@@ -180,7 +180,7 @@ function App() {
       ctx.beginPath();
       let lineaIniciada = false;
 
-      // Recorremos TODAS las migajas del trayecto para unirlas con precisión
+// Recorremos TODAS las migajas del trayecto para unirlas con precisión
       for (let i = 0; i < migajas.length; i++) {
         const migaja = migajas[i];
         
@@ -188,17 +188,23 @@ function App() {
         const rumboMigaja = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
         const distanciaMigaja = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
 
-        // Angulo relativo entre el frente del teléfono y la migaja
+        // Ángulo relativo entre el frente del teléfono y la migaja
         let diffAngulo = rumboMigaja - brujulaTelefono;
         diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
 
-        // PROYECCIÓN DIRECTA: Traducimos el ángulo al espacio de la pantalla
-        // Multiplicamos por un factor más amplio para que la línea se dibuje aunque esté en los extremos laterales
-        const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 90));
+        // PROYECCIÓN HORIZONTAL (Eje X)
+        // Multiplicamos por un factor adecuado para mapear el ángulo al ancho de la pantalla
+        const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 60));
         
-        // Colocamos los puntos simulando profundidad en el suelo (Mitad inferior de la pantalla)
-        const factorDistancia = Math.min(distanciaMigaja, 0.2) / 0.2; // Escala máxima a 200 metros
-        const y = (canvas.height * 0.6) + (factorDistancia * (canvas.height * 0.3));
+        // PROYECCIÓN DE PERSPECTIVA (Eje Y) - CALIBRACIÓN MEJORADA
+        // Usamos una función exponencial inversa para que la distancia se note de forma fluida
+        // Las migajas muy cercanas (0 km) se dibujarán abajo en la pantalla (cerca de tus pies)
+        // Las lejanas subirán suavemente hacia el centro, simulando profundidad en el terreno.
+        const maximaDistanciaGrafica = 0.15; // 150 metros como rango visible óptimo
+        const proporcionDistancia = Math.min(distanciaMigaja, maximaDistanciaGrafica) / maximaDistanciaGrafica;
+        
+        // El camino ocupará desde el 85% de la altura (abajo) hasta el 50% (horizonte)
+        const y = canvas.height - (proporcionDistancia * (canvas.height * 0.35)) - (canvas.height * 0.15);
 
         // Dibujar el trazo continuo uniendo los puntos
         if (!lineaIniciada) {
