@@ -1,40 +1,50 @@
 import { calcularDistancia, calcularRumbo } from "./utils/geo";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 function App() {
   const [puntoPartida, setPuntoPartida] = useState(null);
   const [posicionActual, setPosicionActual] = useState(null);
   const [distancia, setDistancia] = useState(null);
-  const [rumbo, setRumbo] = useState(null); // Ángulo hacia el destino
-  const [brujulaTelefono, setBrujulaTelefono] = useState(0); // Ángulo físico del teléfono
+  const [rumbo, setRumbo] = useState(null);
+  const [brujulaTelefono, setBrujulaTelefono] = useState(0);
   const [errorGps, setErrorGps] = useState(null);
 
-  // 1. Guardar la ubicación base (Al pie del cerro)
+  const [modoCamara, setModoCamara] = useState(false);
+  const [migajas, setMigajas] = useState([]);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const canvasRef = useRef(null);
+
+  // 1. Cargar datos iniciales de LocalStorage
+  useEffect(() => {
+    const guardado = localStorage.getItem("puntoPartida");
+    if (guardado) setPuntoPartida(JSON.parse(guardado));
+
+    const migajasGuardadas = localStorage.getItem("migajas");
+    if (migajasGuardadas) setMigajas(JSON.parse(migajasGuardadas));
+  }, []);
+
+  // 2. Fijar base inicial
   const registrarPuntoPartida = () => {
     if (!navigator.geolocation) {
       setErrorGps("Tu navegador no soporta GPS.");
       return;
     }
-
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const coord = { lat: pos.coords.latitude, lon: pos.coords.longitude };
         setPuntoPartida(coord);
+        setMigajas([coord]);
         localStorage.setItem("puntoPartida", JSON.stringify(coord));
-        alert("¡Punto de partida registrado! Ya puedes iniciar el ascenso.");
+        localStorage.setItem("migajas", JSON.stringify([coord]));
+        alert("¡Base registrada y camino de migajas iniciado!");
       },
-      (err) => setErrorGps("Error al obtener ubicación: " + err.message),
+      (err) => setErrorGps("Error de GPS: " + err.message),
       { enableHighAccuracy: true },
     );
   };
 
-  // Cargar punto si ya existía en memoria local
-  useEffect(() => {
-    const guardado = localStorage.getItem("puntoPartida");
-    if (guardado) setPuntoPartida(JSON.parse(guardado));
-  }, []);
-
-  // 2. Activar el rastreo GPS en tiempo real (Offline)
+  // 3. Rastreo GPS y guardar migajas cada 20 metros
   useEffect(() => {
     if (!puntoPartida) return;
 
@@ -57,66 +67,173 @@ function App() {
         );
 
         setDistancia(dist.toFixed(2));
-        setRumbo(rum); // Guardamos el número entero para la matemática de la flecha
+        setRumbo(rum);
+
+        setMigajas((prevMigajas) => {
+          const ultimaMigaja = prevMigajas[prevMigajas.length - 1];
+          if (!ultimaMigaja) return prevMigajas;
+
+          const distALastMigaja = calcularDistancia(
+            actual.lat,
+            actual.lon,
+            ultimaMigaja.lat,
+            ultimaMigaja.lon,
+          );
+          if (distALastMigaja > 0.02) {
+            // 20 metros
+            const nuevasMigajas = [...prevMigajas, actual];
+            localStorage.setItem("migajas", JSON.stringify(nuevasMigajas));
+            return nuevasMigajas;
+          }
+          return prevMigajas;
+        });
       },
       (err) => setErrorGps("Error de rastreo: " + err.message),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [puntoPartida]);
 
-  // 3. Capturar la brújula física del dispositivo (Giroscopio/Magnetómetro)
+  // 4. Capturar brújula física
   useEffect(() => {
     const manejarOrientacion = (event) => {
-      // webkitCompassHeading es la propiedad estándar en iOS (Safari)
-      // alpha es la propiedad en Android (Chrome), pero requiere calibración.
       let heading = event.webkitCompassHeading || 360 - event.alpha;
-      if (heading) {
-        setBrujulaTelefono(heading);
-      }
+      if (heading) setBrujulaTelefono(heading);
     };
-
-    // Solicitar permisos de orientación (necesario especialmente en iOS)
-    if (
-      typeof DeviceOrientationEvent !== "undefined" &&
-      typeof DeviceOrientationEvent.requestPermission === "function"
-    ) {
-      DeviceOrientationEvent.requestPermission()
-        .then((response) => {
-          if (response === "granted") {
-            window.addEventListener(
-              "deviceorientation",
-              manejarOrientacion,
-              true,
-            );
-          }
-        })
-        .catch(console.error);
-    } else {
-      window.addEventListener("deviceorientation", manejarOrientacion, true);
-    }
-
+    window.addEventListener("deviceorientation", manejarOrientacion, true);
     return () =>
       window.removeEventListener("deviceorientation", manejarOrientacion, true);
   }, []);
 
-  // 4. Calcular cuánto debe rotar la flecha visualmente
-  const rotacionFlecha = rumbo !== null ? rumbo - brujulaTelefono : 0;
-
-  // 5. ALGORITMO DE DESVÍO: ¿El usuario camina hacia el lado contrario?
-  // Normalizamos el error de desvío entre -180 y 180 grados
-  const errorDireccion = ((rotacionFlecha + 180) % 360) - 180;
-  // Si el desvío es mayor a 45 grados (hacia la izquierda o derecha), está desviado
-  const estaDesviado = rumbo !== null && Math.abs(errorDireccion) > 45;
-
-  // Disparar vibración física en el teléfono si está desviado (Offline API)
+  // 5. Control de encendido/apagado de cámara física (Corregido para ESLint)
   useEffect(() => {
-    if (estaDesviado && navigator.vibrate) {
-      // Vibra por 200ms, pausa 100ms, vibra 200ms (alerta de peligro)
-      navigator.vibrate([200, 100, 200]);
+    let activeStream = null;
+
+    async function activarCamara() {
+      if (!modoCamara) {
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+          streamRef.current = null;
+        }
+        return;
+      }
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { exact: "environment" } },
+          audio: false,
+        });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          streamRef.current = stream;
+          activeStream = stream;
+        }
+      } catch (err) {
+        try {
+          const fallback = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+          if (videoRef.current) {
+            videoRef.current.srcObject = fallback;
+            streamRef.current = fallback;
+            activeStream = fallback;
+          }
+        } catch (e) {
+          setErrorGps("No se abrió la cámara.");
+          setModoCamara(false);
+        }
+      }
     }
-  }, [estaDesviado]);
+
+    activarCamara();
+
+    return () => {
+      if (activeStream) activeStream.getTracks().forEach((t) => t.stop());
+    };
+  }, [modoCamara]); // Agregamos modoCamara aquí para resolver la advertencia de dependencias
+
+  // 6. RENDERIZADO DE LA LÍNEA DE RA (Algoritmo de dibujo en perspectiva)
+  useEffect(() => {
+    if (
+      !modoCamara ||
+      !posicionActual ||
+      migajas.length < 2 ||
+      !canvasRef.current
+    )
+      return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+
+    // Ajustar resolución del lienzo
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+
+    const dibujarCaminoRA = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = "#2196F3";
+      ctx.shadowBlur = 15;
+      ctx.shadowColor = "#2196F3";
+
+      ctx.beginPath();
+      let lineaIniciada = false;
+
+      // Recorremos las migajas a la inversa (desde la más reciente hacia la base)
+      for (let i = migajas.length - 1; i >= 0; i--) {
+        const migaja = migajas[i];
+
+        // Calcular rumbo y distancia desde donde estoy parado hacia esa migaja específica
+        const rumboMigaja = calcularRumbo(
+          posicionActual.lat,
+          posicionActual.lon,
+          migaja.lat,
+          migaja.lon,
+        );
+        const distanciaMigaja = calcularDistancia(
+          posicionActual.lat,
+          posicionActual.lon,
+          migaja.lat,
+          migaja.lon,
+        );
+
+        // Diferencia angular entre hacia dónde apunta el teléfono y la migaja
+        let diffAngulo = rumboMigaja - brujulaTelefono;
+        diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
+
+        // Si la migaja cae dentro del campo de visión de la cámara (aprox 60 grados al frente)
+        if (Math.abs(diffAngulo) < 30) {
+          // Mapeo X: Traducir ángulo al ancho de la pantalla
+          const x = canvas.width / 2 + diffAngulo * (canvas.width / 60);
+
+          // Mapeo Y (Perspectiva): Las migajas lejanas se dibujan más arriba (horizonte), las cercanas abajo
+          // Limitamos el rango de visualización efectiva a 500 metros para simular suelo
+          const factorDistancia = Math.min(distanciaMigaja, 0.5) / 0.5;
+          const y = canvas.height - factorDistancia * (canvas.height * 0.6);
+
+          if (!lineaIniciada) {
+            ctx.moveTo(x, y);
+            lineaIniciada = true;
+          } else {
+            ctx.lineTo(x, y);
+          }
+        }
+      }
+      ctx.stroke();
+    };
+
+    // Animación fluida loop
+    const intervalo = setInterval(dibujarCaminoRA, 50);
+    return () => clearInterval(intervalo);
+  }, [modoCamara, posicionActual, brujulaTelefono, migajas]);
+
+  // Telemetría y cálculos generales
+  const rotacionFlecha = rumbo !== null ? rumbo - brujulaTelefono : 0;
+  const errorDireccion = ((rotacionFlecha + 180) % 360) - 180;
+  const estaDesviado = rumbo !== null && Math.abs(errorDireccion) > 45;
 
   return (
     <div
@@ -124,37 +241,56 @@ function App() {
         padding: "20px",
         fontFamily: "Arial, sans-serif",
         textAlign: "center",
-        backgroundColor: "#121212",
+        backgroundColor: modoCamara ? "transparent" : "#121212",
         color: "#e0e0e0",
         minHeight: "100vh",
+        position: "relative",
       }}
     >
-      <h1 style={{ fontSize: "26px", color: "#4CAF50", marginBottom: "5px" }}>
-        Retorno Seguro 🌲
-      </h1>
-      <p style={{ opacity: 0.7, fontSize: "14px" }}>
-        Brújula táctica offline para senderismo
-      </p>
-
-      {errorGps && (
-        <p
-          style={{
-            color: "#ff6b6b",
-            backgroundColor: "#2c1a1a",
-            padding: "10px",
-            borderRadius: "5px",
-          }}
-        >
-          ⚠️ {errorGps}
-        </p>
+      {modoCamara && (
+        <>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100vw",
+              height: "100vh",
+              objectFit: "cover",
+              zIndex: -2,
+            }}
+          />
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100vw",
+              height: "100vh",
+              pointerEvents: "none",
+              zIndex: -1,
+            }}
+          />
+        </>
       )}
 
+      <h1
+        style={{
+          fontSize: "24px",
+          color: "#4CAF50",
+          margin: "5px 0",
+          textShadow: modoCamara ? "0 2px 4px black" : "none",
+        }}
+      >
+        Retorno Seguro RA 🛰️
+      </h1>
+
       {!puntoPartida ? (
-        <div style={{ marginTop: "60px" }}>
-          <p style={{ fontSize: "16px", margin: "20px" }}>
-            👉 Estás en la base del cerro. Registra tu posición actual antes de
-            perder la señal.
-          </p>
+        <div style={{ marginTop: "80px" }}>
           <button
             onClick={registrarPuntoPartida}
             style={{
@@ -165,7 +301,6 @@ function App() {
               color: "white",
               border: "none",
               borderRadius: "30px",
-              boxShadow: "0 4px 15px rgba(76,175,80,0.3)",
               cursor: "pointer",
             }}
           >
@@ -173,116 +308,146 @@ function App() {
           </button>
         </div>
       ) : (
-        <div style={{ marginTop: "20px" }}>
-          {/* CONTENEDOR DISRUPTIVO: LA FLECHA INTERACTIVA */}
-          <div
+        <div>
+          <button
+            onClick={() => setModoCamara(!modoCamara)}
             style={{
-              margin: "30px auto",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
+              padding: "10px 20px",
+              margin: "10px",
+              fontSize: "14px",
+              fontWeight: "bold",
+              backgroundColor: modoCamara ? "#f44336" : "#2196F3",
+              color: "white",
+              border: "none",
+              borderRadius: "20px",
+              cursor: "pointer",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
             }}
           >
-            {/* Círculo de la brújula adaptativo */}
+            {modoCamara
+              ? "🔋 Activar Modo Económico"
+              : "📷 Activar Visión RA (Camino)"}
+          </button>
+
+          <div
+            style={{
+              backgroundColor: "rgba(20,20,20,0.85)",
+              padding: "10px",
+              borderRadius: "10px",
+              maxWidth: "240px",
+              margin: "10px auto",
+              border: "1px solid #333",
+            }}
+          >
+            <span style={{ fontSize: "11px", color: "#aaa" }}>
+              AL ORIGEN: <b>{distancia ? `${distancia} Km` : "Buscando..."}</b>
+            </span>
+            <br />
+            <span style={{ fontSize: "11px", color: "#4CAF50" }}>
+              👣 {migajas.length} puntos en el camino
+            </span>
+          </div>
+
+          {!modoCamara && (
             <div
               style={{
+                margin: "40px auto",
                 width: "200px",
                 height: "200px",
                 borderRadius: "50%",
                 border: estaDesviado
                   ? "3px solid #ff6b6b"
-                  : "3px solid #2196F3", // Rojo si está desviado
+                  : "3px solid #2196F3",
                 backgroundColor: "#1a1a1a",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                boxShadow: estaDesviado
-                  ? "0 0 30px rgba(255,107,107,0.4)"
-                  : "0 0 25px rgba(33,150,243,0.2)",
                 position: "relative",
-                transition: "all 0.3s ease",
               }}
             >
-              {/* Flecha SVG */}
               <svg
                 style={{
                   width: "100px",
                   height: "100px",
                   transform: `rotate(${rotacionFlecha}deg)`,
-                  transition: "transform 0.2s ease-out",
-                  fill: estaDesviado
-                    ? "#ff6b6b"
-                    : distancia && distancia < 0.1
-                      ? "#4CAF50"
-                      : "#2196F3",
+                  fill: estaDesviado ? "#ff6b6b" : "#2196F3",
                 }}
                 viewBox="0 0 24 24"
               >
                 <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" />
               </svg>
+            </div>
+          )}
 
-              <span
+          {modoCamara && (
+            <div>
+              {estaDesviado && (
+                <div
+                  style={{
+                    position: "fixed",
+                    top: 0,
+                    left: 0,
+                    width: "100vw",
+                    height: "100vh",
+                    border: "10px solid rgba(255,107,107,0.6)",
+                    boxSizing: "border-box",
+                    pointerEvents: "none",
+                  }}
+                />
+              )}
+
+              {/* MINI-BRÚJULA FLOTANTE INFERIOR DERECHA */}
+              <div
                 style={{
-                  position: "absolute",
-                  top: "10px",
-                  fontSize: "12px",
-                  fontWeight: "bold",
-                  color: estaDesviado ? "#ff6b6b" : "#666",
+                  position: "fixed",
+                  bottom: "20px",
+                  right: "20px",
+                  width: "80px",
+                  height: "80px",
+                  borderRadius: "50%",
+                  backgroundColor: "rgba(0,0,0,0.75)",
+                  border: estaDesviado
+                    ? "2px solid #ff6b6b"
+                    : "2px solid #4CAF50",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
               >
-                {estaDesviado ? "⚠️ DESVIADO" : "NORTE APP"}
-              </span>
+                <svg
+                  style={{
+                    width: "40px",
+                    height: "40px",
+                    transform: `rotate(${rotacionFlecha}deg)`,
+                    fill: estaDesviado ? "#ff6b6b" : "#4CAF50",
+                  }}
+                  viewBox="0 0 24 24"
+                >
+                  <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" />
+                </svg>
+              </div>
             </div>
+          )}
 
-            {/* Datos de telemetría */}
-            <div
-              style={{
-                marginTop: "20px",
-                padding: "15px 30px",
-                borderRadius: "15px",
-                backgroundColor: "#1c1c1c",
-                border: "1px solid #333",
-                inlineSize: "280px",
-              }}
-            >
-              <p style={{ margin: "5px 0", fontSize: "14px", color: "#aaa" }}>
-                DISTANCIA AL ORIGEN
-              </p>
-              <p
-                style={{
-                  margin: "0",
-                  fontSize: "32px",
-                  fontWeight: "bold",
-                  color: "#fff",
-                }}
-              >
-                {distancia ? `${distancia} Km` : "Calculando..."}
-              </p>
-            </div>
-          </div>
-
+          <br />
           <button
             onClick={() => {
-              if (
-                window.confirm("¿Seguro que quieres borrar la ruta actual?")
-              ) {
+              if (confirm("¿Borrar ruta?")) {
                 localStorage.clear();
                 setPuntoPartida(null);
-                setDistancia(null);
+                setMigajas([]);
               }
             }}
             style={{
-              backgroundColor: "transparent",
+              backgroundColor: "rgba(0,0,0,0.6)",
               color: "#ff6b6b",
               border: "1px solid #ff6b6b",
-              padding: "8px 15px",
-              borderRadius: "20px",
-              cursor: "pointer",
-              fontSize: "12px",
-              marginTop: "20px",
+              padding: "5px 10px",
+              borderRadius: "15px",
+              fontSize: "11px",
             }}
           >
-            Reiniciar Ruta
+            Reiniciar Todo
           </button>
         </div>
       )}
