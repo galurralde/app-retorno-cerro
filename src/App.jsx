@@ -182,37 +182,25 @@ function App() {
       ctx.beginPath();
       let lineaIniciada = false;
 
-      // Recorremos las migajas a la inversa (desde la más reciente hacia la base)
+// Recorremos las migajas a la inversa (desde la más reciente hacia la base)
       for (let i = migajas.length - 1; i >= 0; i--) {
         const migaja = migajas[i];
+        
+        const rumboMigaja = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
+        const distanciaMigaja = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
 
-        // Calcular rumbo y distancia desde donde estoy parado hacia esa migaja específica
-        const rumboMigaja = calcularRumbo(
-          posicionActual.lat,
-          posicionActual.lon,
-          migaja.lat,
-          migaja.lon,
-        );
-        const distanciaMigaja = calcularDistancia(
-          posicionActual.lat,
-          posicionActual.lon,
-          migaja.lat,
-          migaja.lon,
-        );
-
-        // Diferencia angular entre hacia dónde apunta el teléfono y la migaja
         let diffAngulo = rumboMigaja - brujulaTelefono;
-        diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
+        diffAngulo = ((diffAngulo + 180) % 360) - 180; 
 
-        // Si la migaja cae dentro del campo de visión de la cámara (aprox 60 grados al frente)
-        if (Math.abs(diffAngulo) < 30) {
-          // Mapeo X: Traducir ángulo al ancho de la pantalla
-          const x = canvas.width / 2 + diffAngulo * (canvas.width / 60);
-
-          // Mapeo Y (Perspectiva): Las migajas lejanas se dibujan más arriba (horizonte), las cercanas abajo
-          // Limitamos el rango de visualización efectiva a 500 metros para simular suelo
-          const factorDistancia = Math.min(distanciaMigaja, 0.5) / 0.5;
-          const y = canvas.height - factorDistancia * (canvas.height * 0.6);
+        // OPTIMIZACIÓN: Ampliamos el campo visual a 120 grados para que la línea no se corte tan fácil
+        if (Math.abs(diffAngulo) < 60) {
+          // Mapeo X: Distribuido en el ancho de la pantalla usando el nuevo ángulo
+          const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 120));
+          
+          // Mapeo Y (Perspectiva mejorada): Forzamos que los puntos se dibujen en la mitad inferior de la pantalla (el suelo)
+          // Independientemente de la distancia, hacemos que se proyecte un camino visible
+          const factorDistancia = Math.min(distanciaMigaja, 0.3) / 0.3; // Rango óptimo 300 metros
+          const y = (canvas.height * 0.5) + (factorDistancia * (canvas.height * 0.4));
 
           if (!lineaIniciada) {
             ctx.moveTo(x, y);
