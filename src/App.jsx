@@ -155,59 +155,57 @@ function App() {
     };
   }, [modoCamara]); // Agregamos modoCamara aquí para resolver la advertencia de dependencias
 
-  // 6. RENDERIZADO DE LA LÍNEA DE RA (Algoritmo de dibujo en perspectiva)
+// 6. RENDERIZADO DE LA LÍNEA DE RA (Proyección absoluta de 360° en el Suelo)
   useEffect(() => {
-    if (
-      !modoCamara ||
-      !posicionActual ||
-      migajas.length < 2 ||
-      !canvasRef.current
-    )
-      return;
+    if (!modoCamara || !posicionActual || migajas.length < 2 || !canvasRef.current) return;
 
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d");
-
-    // Ajustar resolución del lienzo
+    const ctx = canvas.getContext('2d');
+    
+    // Forzar resolución nativa de la pantalla del celular
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
 
     const dibujarCaminoRA = () => {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = "#2196F3";
-      ctx.shadowBlur = 15;
-      ctx.shadowColor = "#2196F3";
-
+      
+      // Estilo de Neón Táctico
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = '#00E5FF'; // Celeste Neón Brillante
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = '#00E5FF';
+      
       ctx.beginPath();
       let lineaIniciada = false;
 
-// Recorremos las migajas a la inversa (desde la más reciente hacia la base)
-      for (let i = migajas.length - 1; i >= 0; i--) {
+      // Recorremos TODAS las migajas del trayecto para unirlas con precisión
+      for (let i = 0; i < migajas.length; i++) {
         const migaja = migajas[i];
         
+        // Calcular la dirección real de la migaja
         const rumboMigaja = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
         const distanciaMigaja = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
 
+        // Angulo relativo entre el frente del teléfono y la migaja
         let diffAngulo = rumboMigaja - brujulaTelefono;
-        diffAngulo = ((diffAngulo + 180) % 360) - 180; 
+        diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
 
-        // OPTIMIZACIÓN: Ampliamos el campo visual a 120 grados para que la línea no se corte tan fácil
-        if (Math.abs(diffAngulo) < 60) {
-          // Mapeo X: Distribuido en el ancho de la pantalla usando el nuevo ángulo
-          const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 120));
-          
-          // Mapeo Y (Perspectiva mejorada): Forzamos que los puntos se dibujen en la mitad inferior de la pantalla (el suelo)
-          // Independientemente de la distancia, hacemos que se proyecte un camino visible
-          const factorDistancia = Math.min(distanciaMigaja, 0.3) / 0.3; // Rango óptimo 300 metros
-          const y = (canvas.height * 0.5) + (factorDistancia * (canvas.height * 0.4));
+        // PROYECCIÓN DIRECTA: Traducimos el ángulo al espacio de la pantalla
+        // Multiplicamos por un factor más amplio para que la línea se dibuje aunque esté en los extremos laterales
+        const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 90));
+        
+        // Colocamos los puntos simulando profundidad en el suelo (Mitad inferior de la pantalla)
+        const factorDistancia = Math.min(distanciaMigaja, 0.2) / 0.2; // Escala máxima a 200 metros
+        const y = (canvas.height * 0.6) + (factorDistancia * (canvas.height * 0.3));
 
-          if (!lineaIniciada) {
-            ctx.moveTo(x, y);
-            lineaIniciada = true;
-          } else {
-            ctx.lineTo(x, y);
-          }
+        // Dibujar el trazo continuo uniendo los puntos
+        if (!lineaIniciada) {
+          ctx.moveTo(x, y);
+          lineaIniciada = true;
+        } else {
+          ctx.lineTo(x, y);
         }
       }
       ctx.stroke();
@@ -217,6 +215,8 @@ function App() {
     const intervalo = setInterval(dibujarCaminoRA, 50);
     return () => clearInterval(intervalo);
   }, [modoCamara, posicionActual, brujulaTelefono, migajas]);
+
+    
 
   // Telemetría y cálculos generales
   const rotacionFlecha = rumbo !== null ? rumbo - brujulaTelefono : 0;
