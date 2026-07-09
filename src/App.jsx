@@ -1,5 +1,5 @@
-import { calcularDistancia, calcularRumbo } from "./utils/geo";
-import { useEffect, useRef, useState } from "react";
+import { calcularDistancia, calcularRumbo } from './utils/geo';
+import { useEffect, useRef, useState } from 'react';
 
 function App() {
   const [puntoPartida, setPuntoPartida] = useState(null);
@@ -11,17 +11,31 @@ function App() {
 
   const [modoCamara, setModoCamara] = useState(false);
   const [migajas, setMigajas] = useState([]);
+  
+  // NUEVOS ESTADOS DE TELEMETRÍA PARA EL REGISTRO TXT
+  const [logs, setLogs] = useState([]); // Historial de eventos en memoria
+  const [aceleracion, setAceleracion] = useState({ x: 0, y: 0, z: 0 });
+  
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const canvasRef = useRef(null);
 
-  // 1. Cargar datos iniciales de LocalStorage
+  // Función para registrar eventos con marca de tiempo
+  const registrarLog = (tipo, detalle) => {
+    const timestamp = new Date().toISOString();
+    const nuevaLinea = `[${timestamp}] | ${tipo} | ${JSON.stringify(detalle)}`;
+    setLogs((prev) => [...prev.slice(-300), nuevaLinea]); // Guardamos los últimos 300 eventos para no saturar
+  };
+
+  // 1. Cargar datos iniciales
   useEffect(() => {
-    const guardado = localStorage.getItem("puntoPartida");
+    const guardado = localStorage.getItem('puntoPartida');
     if (guardado) setPuntoPartida(JSON.parse(guardado));
 
-    const migajasGuardadas = localStorage.getItem("migajas");
+    const migajasGuardadas = localStorage.getItem('migajas');
     if (migajasGuardadas) setMigajas(JSON.parse(migajasGuardadas));
+    
+    registrarLog("SISTEMA", "Aplicación iniciada.");
   }, []);
 
   // 2. Fijar base inicial
@@ -35,412 +49,177 @@ function App() {
         const coord = { lat: pos.coords.latitude, lon: pos.coords.longitude };
         setPuntoPartida(coord);
         setMigajas([coord]);
-        localStorage.setItem("puntoPartida", JSON.stringify(coord));
-        localStorage.setItem("migajas", JSON.stringify([coord]));
-        alert("¡Base registrada y camino de migajas iniciado!");
+        localStorage.setItem('puntoPartida', JSON.stringify(coord));
+        localStorage.setItem('migajas', JSON.stringify([coord]));
+        registrarLog("GPS_BASE", coord);
+        alert("¡Base registrada!");
       },
       (err) => setErrorGps("Error de GPS: " + err.message),
-      { enableHighAccuracy: true },
+      { enableHighAccuracy: true }
     );
   };
 
-  // 3. Rastreo GPS y guardar migajas cada 20 metros
+  // 3. Rastreo GPS y migajas
   useEffect(() => {
     if (!puntoPartida) return;
 
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const actual = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+        const actual = { lat: pos.coords.latitude, lon: pos.coords.longitude, alt: pos.coords.altitude, prec: pos.coords.accuracy };
         setPosicionActual(actual);
 
-        const dist = calcularDistancia(
-          actual.lat,
-          actual.lon,
-          puntoPartida.lat,
-          puntoPartida.lon,
-        );
-        const rum = calcularRumbo(
-          actual.lat,
-          actual.lon,
-          puntoPartida.lat,
-          puntoPartida.lon,
-        );
-
+        const dist = calcularDistancia(actual.lat, actual.lon, puntoPartida.lat, puntoPartida.lon);
+        const rum = calcularRumbo(actual.lat, actual.lon, puntoPartida.lat, puntoPartida.lon);
+        
         setDistancia(dist.toFixed(2));
         setRumbo(rum);
+
+        registrarLog("GPS_TRACK", { dist: dist.toFixed(4), rum, alt: actual.alt, precision: actual.prec });
 
         setMigajas((prevMigajas) => {
           const ultimaMigaja = prevMigajas[prevMigajas.length - 1];
           if (!ultimaMigaja) return prevMigajas;
 
-          const distALastMigaja = calcularDistancia(
-            actual.lat,
-            actual.lon,
-            ultimaMigaja.lat,
-            ultimaMigaja.lon,
-          );
+          const distALastMigaja = calcularDistancia(actual.lat, actual.lon, ultimaMigaja.lat, ultimaMigaja.lon);
           if (distALastMigaja > 0.02) {
-            // 20 metros
-            const nuevasMigajas = [...prevMigajas, actual];
-            localStorage.setItem("migajas", JSON.stringify(nuevasMigajas));
+            const nuevasMigajas = [...prevMigajas, { lat: actual.lat, lon: actual.lon }];
+            localStorage.setItem('migajas', JSON.stringify(nuevasMigajas));
+            registrarLog("MIGAJA_NUEVA", { total: nuevasMigajas.length });
             return nuevasMigajas;
           }
           return prevMigajas;
         });
       },
-      (err) => setErrorGps("Error de rastreo: " + err.message),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+      (err) => {
+        setErrorGps("Error de rastreo: " + err.message);
+        registrarLog("ERROR_GPS", err.message);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [puntoPartida]);
 
-  // 4. Capturar brújula física
+  // 4. Capturar Orientación (Brújula) y Acelerómetro (Movimientos Bruscos)
   useEffect(() => {
     const manejarOrientacion = (event) => {
-      let heading = event.webkitCompassHeading || 360 - event.alpha;
-      if (heading) setBrujulaTelefono(heading);
+      let heading = event.webkitCompassHeading || (360 - event.alpha);
+      if (heading) {
+        setBrujulaTelefono(heading);
+        // Registramos muestreos de brújula de forma intermitente para no saturar el log
+        if (Math.random() < 0.05) {
+          registrarLog("COMPASS_RAW", { heading: heading.toFixed(1), alpha: event.alpha?.toFixed(1), beta: event.beta?.toFixed(1), gamma: event.gamma?.toFixed(1) });
+        }
+      }
     };
-    window.addEventListener("deviceorientation", manejarOrientacion, true);
-    return () =>
-      window.removeEventListener("deviceorientation", manejarOrientacion, true);
+
+    const manejarMovimiento = (event) => {
+      const acc = event.accelerationIncludingGravity;
+      if (acc) {
+        setAceleracion({ x: acc.x || 0, y: acc.y || 0, z: acc.z || 0 });
+        // Si detecta un impacto brusco (salto, tropiezo o corrida intensa), lo guarda de inmediato
+        if (Math.abs(acc.x) > 15 || Math.abs(acc.y) > 15 || Math.abs(acc.z) > 15) {
+          registrarLog("IMPACTO_DETECTADO", { x: acc.x.toFixed(2), y: acc.y.toFixed(2), z: acc.z.toFixed(2) });
+        }
+      }
+    };
+
+    window.addEventListener('deviceorientation', manejarOrientacion, true);
+    window.addEventListener('devicemotion', manejarMovimiento, true);
+    
+    return () => {
+      window.removeEventListener('deviceorientation', manejarOrientacion, true);
+      window.removeEventListener('devicemotion', manejarMovimiento, true);
+    };
   }, []);
 
-  // 5. Control de encendido/apagado de cámara física (Corregido para ESLint)
+  // 5. Control de la cámara física
   useEffect(() => {
-    let activeStream = null;
-
     async function activarCamara() {
-      if (!modoCamara) {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((t) => t.stop());
-          streamRef.current = null;
-        }
-        return;
-      }
-
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { exact: "environment" } },
-          audio: false,
-        });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          streamRef.current = stream;
-          activeStream = stream;
-        }
-      } catch (err) {
+      if (modoCamara) {
         try {
-          const fallback = await navigator.mediaDevices.getUserMedia({
-            video: true,
-            audio: false,
-          });
-          if (videoRef.current) {
-            videoRef.current.srcObject = fallback;
-            streamRef.current = fallback;
-            activeStream = fallback;
-          }
-        } catch (e) {
-          setErrorGps("No se abrió la cámara.");
-          setModoCamara(false);
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: "environment" } }, audio: false });
+          if (videoRef.current) { videoRef.current.srcObject = stream; streamRef.current = stream; }
+          registrarLog("CAMERA", "Encendida");
+        } catch (err) {
+          try {
+            const fallback = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            if (videoRef.current) { videoRef.current.srcObject = fallback; streamRef.current = fallback; }
+          } catch (e) { setModoCamara(false); registrarLog("ERROR_CAMERA", err.message); }
         }
+      } else {
+        if (streamRef.current) { streamRef.current.getTracks().forEach(t => t.stop()); streamRef.current = null; }
+        registrarLog("CAMERA", "Apagada (Ahorro Energía)");
       }
     }
-
     activarCamara();
+  }, [modoCamara]);
 
-    return () => {
-      if (activeStream) activeStream.getTracks().forEach((t) => t.stop());
-    };
-  }, [modoCamara]); // Agregamos modoCamara aquí para resolver la advertencia de dependencias
+  // FUNCIÓN CLAVE: Descargar el archivo TXT con los datos matemáticos acumulados
+  const descargarDiagnosticoTxt = () => {
+    const contenido = logs.join('\n');
+    const blob = new Blob([contenido], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `telemetria_cerro_${Date.now()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
-// 6. RENDERIZADO DE LA LÍNEA DE RA (Proyección absoluta de 360° en el Suelo)
-  useEffect(() => {
-    if (!modoCamara || !posicionActual || migajas.length < 2 || !canvasRef.current) return;
-
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    
-    // Forzar resolución nativa de la pantalla del celular
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-
-    const dibujarCaminoRA = () => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Estilo de Neón Táctico
-      ctx.lineWidth = 8;
-      ctx.strokeStyle = '#00E5FF'; // Celeste Neón Brillante
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.shadowBlur = 20;
-      ctx.shadowColor = '#00E5FF';
-      
-      ctx.beginPath();
-      let lineaIniciada = false;
-
-// Recorremos TODAS las migajas del trayecto para unirlas con precisión
-      for (let i = 0; i < migajas.length; i++) {
-        const migaja = migajas[i];
-        
-        // Calcular la dirección real de la migaja
-        const rumboMigaja = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
-        const distanciaMigaja = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
-
-        // Ángulo relativo entre el frente del teléfono y la migaja
-        let diffAngulo = rumboMigaja - brujulaTelefono;
-        diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
-
-        // PROYECCIÓN HORIZONTAL (Eje X)
-        // Multiplicamos por un factor adecuado para mapear el ángulo al ancho de la pantalla
-        const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 60));
-        
-        // PROYECCIÓN DE PERSPECTIVA (Eje Y) - CALIBRACIÓN MEJORADA
-        // Usamos una función exponencial inversa para que la distancia se note de forma fluida
-        // Las migajas muy cercanas (0 km) se dibujarán abajo en la pantalla (cerca de tus pies)
-        // Las lejanas subirán suavemente hacia el centro, simulando profundidad en el terreno.
-        const maximaDistanciaGrafica = 0.15; // 150 metros como rango visible óptimo
-        const proporcionDistancia = Math.min(distanciaMigaja, maximaDistanciaGrafica) / maximaDistanciaGrafica;
-        
-        // El camino ocupará desde el 85% de la altura (abajo) hasta el 50% (horizonte)
-        const y = canvas.height - (proporcionDistancia * (canvas.height * 0.35)) - (canvas.height * 0.15);
-
-        // Dibujar el trazo continuo uniendo los puntos
-        if (!lineaIniciada) {
-          ctx.moveTo(x, y);
-          lineaIniciada = true;
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      ctx.stroke();
-    };
-
-    // Animación fluida loop
-    const intervalo = setInterval(dibujarCaminoRA, 50);
-    return () => clearInterval(intervalo);
-  }, [modoCamara, posicionActual, brujulaTelefono, migajas]);
-
-    
-
-  // Telemetría y cálculos generales
-  const rotacionFlecha = rumbo !== null ? rumbo - brujulaTelefono : 0;
+  const rotacionFlecha = rumbo !== null ? (rumbo - brujulaTelefono) : 0;
   const errorDireccion = ((rotacionFlecha + 180) % 360) - 180;
   const estaDesviado = rumbo !== null && Math.abs(errorDireccion) > 45;
 
   return (
-    <div
-      style={{
-        padding: "20px",
-        fontFamily: "Arial, sans-serif",
-        textAlign: "center",
-        backgroundColor: modoCamara ? "transparent" : "#121212",
-        color: "#e0e0e0",
-        minHeight: "100vh",
-        position: "relative",
-      }}
-    >
+    <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif', textAlign: 'center', backgroundColor: modoCamara ? 'transparent' : '#121212', color: '#e0e0e0', minHeight: '100vh', position: 'relative' }}>
+      
       {modoCamara && (
         <>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              width: "100vw",
-              height: "100vh",
-              objectFit: "cover",
-              zIndex: -2,
-            }}
-          />
-          <canvas
-            ref={canvasRef}
-            style={{
-              position: "fixed",
-              top: 0,
-              left: 0,
-              width: "100vw",
-              height: "100vh",
-              pointerEvents: "none",
-              zIndex: -1,
-            }}
-          />
+          <video ref={videoRef} autoPlay playsInline style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', objectFit: 'cover', zIndex: -2 }} />
+          <canvas ref={canvasRef} style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', pointerEvents: 'none', zIndex: -1 }} />
         </>
       )}
 
-      <h1
-        style={{
-          fontSize: "24px",
-          color: "#4CAF50",
-          margin: "5px 0",
-          textShadow: modoCamara ? "0 2px 4px black" : "none",
-        }}
-      >
-        Retorno Seguro RA 🛰️
-      </h1>
+      <h1 style={{ fontSize: '22px', color: '#4CAF50', margin: '5px 0', textShadow: modoCamara ? '0 2px 4px black' : 'none' }}>Laboratorio Táctico 🛰️</h1>
 
       {!puntoPartida ? (
-        <div style={{ marginTop: "80px" }}>
-          <button
-            onClick={registrarPuntoPartida}
-            style={{
-              padding: "18px 35px",
-              fontSize: "18px",
-              fontWeight: "bold",
-              backgroundColor: "#4CAF50",
-              color: "white",
-              border: "none",
-              borderRadius: "30px",
-              cursor: "pointer",
-            }}
-          >
+        <div style={{ marginTop: '80px' }}>
+          <button onClick={registrarPuntoPartida} style={{ padding: '18px 35px', fontSize: '18px', fontWeight: 'bold', backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: '30px' }}>
             Fijar Punto de Partida
           </button>
         </div>
       ) : (
         <div>
-          <button
-            onClick={() => setModoCamara(!modoCamara)}
-            style={{
-              padding: "10px 20px",
-              margin: "10px",
-              fontSize: "14px",
-              fontWeight: "bold",
-              backgroundColor: modoCamara ? "#f44336" : "#2196F3",
-              color: "white",
-              border: "none",
-              borderRadius: "20px",
-              cursor: "pointer",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
-            }}
-          >
-            {modoCamara
-              ? "🔋 Activar Modo Económico"
-              : "📷 Activar Visión RA (Camino)"}
+          <button onClick={() => setModoCamara(!modoCamara)} style={{ padding: '10px 20px', margin: '5px', fontSize: '13px', fontWeight: 'bold', backgroundColor: modoCamara ? '#f44336' : '#2196F3', color: 'white', border: 'none', borderRadius: '20px' }}>
+            {modoCamara ? "🔋 Modo Económico" : "📷 Modo Cámara"}
           </button>
 
-          <div
-            style={{
-              backgroundColor: "rgba(20,20,20,0.85)",
-              padding: "10px",
-              borderRadius: "10px",
-              maxWidth: "240px",
-              margin: "10px auto",
-              border: "1px solid #333",
-            }}
-          >
-            <span style={{ fontSize: "11px", color: "#aaa" }}>
-              AL ORIGEN: <b>{distancia ? `${distancia} Km` : "Buscando..."}</b>
-            </span>
-            <br />
-            <span style={{ fontSize: "11px", color: "#4CAF50" }}>
-              👣 {migajas.length} puntos en el camino
-            </span>
+          {/* BOTÓN MAGISTRAL DE TELEMETRÍA */}
+          <button onClick={descargarDiagnosticoTxt} style={{ padding: '10px 20px', margin: '5px', fontSize: '13px', fontWeight: 'bold', backgroundColor: '#E91E63', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer', boxShadow: '0 4px 10px rgba(233,30,99,0.3)' }}>
+            💾 Descargar Telemetría (.TXT)
+          </button>
+
+          {/* MONITOR TÁCTICO EN TIEMPO REAL */}
+          <div style={{ backgroundColor: 'rgba(20,20,20,0.9)', padding: '12px', borderRadius: '10px', maxWidth: '280px', margin: '10px auto', border: '1px solid #333', textAlign: 'left', fontSize: '12px' }}>
+            <p style={{ margin: '3px 0' }}><b>Distancia:</b> {distancia ? `${distancia} Km` : 'Buscando...'}</p>
+            <p style={{ margin: '3px 0' }}><b>Rumbo Requerido:</b> {rumbo ? `${rumbo.toFixed(1)}°` : '---'}</p>
+            <p style={{ margin: '3px 0' }}><b>Brújula Celular:</b> {brujulaTelefono.toFixed(1)}°</p>
+            <p style={{ margin: '3px 0', color: '#00E5FF' }}><b>G-Force:</b> X:{aceleracion.x.toFixed(1)} Y:{aceleracion.y.toFixed(1)} Z:{aceleracion.z.toFixed(1)}</p>
+            <p style={{ margin: '3px 0', color: '#4CAF50' }}><b>Buffer de Logs:</b> {logs.length} líneas guardadas</p>
           </div>
 
-          {!modoCamara && (
-            <div
-              style={{
-                margin: "40px auto",
-                width: "200px",
-                height: "200px",
-                borderRadius: "50%",
-                border: estaDesviado
-                  ? "3px solid #ff6b6b"
-                  : "3px solid #2196F3",
-                backgroundColor: "#1a1a1a",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                position: "relative",
-              }}
-            >
-              <svg
-                style={{
-                  width: "100px",
-                  height: "100px",
-                  transform: `rotate(${rotacionFlecha}deg)`,
-                  fill: estaDesviado ? "#ff6b6b" : "#2196F3",
-                }}
-                viewBox="0 0 24 24"
-              >
-                <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" />
+          {modoCamara && (
+            <div style={{ position: 'fixed', bottom: '20px', right: '20px', width: '70px', height: '70px', borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.75)', border: estaDesviado ? '2px solid #ff6b6b' : '2px solid #4CAF50', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg style={{ width: '35px', height: '35px', transform: `rotate(${rotacionFlecha}deg)`, fill: estaDesviado ? '#ff6b6b' : '#4CAF50' }} viewBox="0 0 24 24">
+                <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
               </svg>
             </div>
           )}
 
-          {modoCamara && (
-            <div>
-              {estaDesviado && (
-                <div
-                  style={{
-                    position: "fixed",
-                    top: 0,
-                    left: 0,
-                    width: "100vw",
-                    height: "100vh",
-                    border: "10px solid rgba(255,107,107,0.6)",
-                    boxSizing: "border-box",
-                    pointerEvents: "none",
-                  }}
-                />
-              )}
-
-              {/* MINI-BRÚJULA FLOTANTE INFERIOR DERECHA */}
-              <div
-                style={{
-                  position: "fixed",
-                  bottom: "20px",
-                  right: "20px",
-                  width: "80px",
-                  height: "80px",
-                  borderRadius: "50%",
-                  backgroundColor: "rgba(0,0,0,0.75)",
-                  border: estaDesviado
-                    ? "2px solid #ff6b6b"
-                    : "2px solid #4CAF50",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                <svg
-                  style={{
-                    width: "40px",
-                    height: "40px",
-                    transform: `rotate(${rotacionFlecha}deg)`,
-                    fill: estaDesviado ? "#ff6b6b" : "#4CAF50",
-                  }}
-                  viewBox="0 0 24 24"
-                >
-                  <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z" />
-                </svg>
-              </div>
-            </div>
-          )}
-
           <br />
-          <button
-            onClick={() => {
-              if (confirm("¿Borrar ruta?")) {
-                localStorage.clear();
-                setPuntoPartida(null);
-                setMigajas([]);
-              }
-            }}
-            style={{
-              backgroundColor: "rgba(0,0,0,0.6)",
-              color: "#ff6b6b",
-              border: "1px solid #ff6b6b",
-              padding: "5px 10px",
-              borderRadius: "15px",
-              fontSize: "11px",
-            }}
-          >
+          <button onClick={() => { if(confirm("¿Borrar ruta?")) { localStorage.clear(); setPuntoPartida(null); setMigajas([]); setLogs([]); } }} style={{ backgroundColor: 'rgba(0,0,0,0.6)', color: '#ff6b6b', border: '1px solid #ff6b6b', padding: '5px 10px', borderRadius: '15px', fontSize: '11px', marginTop: '10px' }}>
             Reiniciar Todo
           </button>
         </div>
