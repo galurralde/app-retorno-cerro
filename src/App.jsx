@@ -125,7 +125,7 @@ function App() {
     activarCamara();
   }, [modoCamara]);
 
-  // 6. RENDERIZADO ESTABILIZADO ANTI-SHOCK (Camino de Retorno de Neón)
+// 6. RENDERIZADO ESTABILIZADO: Cinta de Ruta Continua 360° (RA)
   useEffect(() => {
     if (!modoCamara || !posicionActual || migajas.length < 2 || !canvasRef.current) return;
 
@@ -138,52 +138,54 @@ function App() {
       
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
-      // Estilo de Sendero Táctico de Alta Visibilidad
-      ctx.lineWidth = 10;
-      ctx.strokeStyle = '#00E5FF'; 
+      // Estilo de Sendero Táctico de Alta Visibilidad (Efecto Neón Grueso)
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = '#00E5FF'; // Celeste Neón
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.shadowBlur = 15;
+      ctx.shadowBlur = 25;
       ctx.shadowColor = '#00E5FF';
 
       ctx.beginPath();
       let lineaIniciada = false;
 
+      // Recorremos secuencialmente todas las migajas para asegurar que se unan entre sí
       for (let i = 0; i < migajas.length; i++) {
         const migaja = migajas[i];
         
         const rumboMigaja = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
         const distanciaMigaja = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
 
-        // Usamos la brújula suavizada por el filtro Low-pass
+        // Brújula suavizada con nuestro filtro Low-pass
         let diffAngulo = rumboMigaja - brujulaFiltrada.current;
-        diffAngulo = ((diffAngulo + 180) % 360) - 180;
+        diffAngulo = ((diffAngulo + 180) % 360) - 180; // Normalizar entre -180 y 180
 
-        // Si el punto está dentro de un campo visual extendido, lo dibujamos
-        if (Math.abs(diffAngulo) < 80) {
-          // Mapeo X robusto
-          const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 90));
-          
-          // Mapeo Y Compensado por la inclinación física real del teléfono (betaFiltrado)
-          // Esto evita que la línea se mueva arriba/abajo si estás subiendo o bajando pendientes
-          const factorDistancia = Math.min(distanciaMigaja, 0.15) / 0.15; // Escala a 150 metros
-          
-          // Compensación por cabeceo del dispositivo
-          const compensacionInclinacion = (betaFiltrado.current - 45) * 4; 
-          const y = (canvas.height * 0.55) + (factorDistancia * (canvas.height * 0.35)) - compensacionInclinacion;
+        // MAPEO HORIZONTAL (Eje X) con cono de visibilidad expandido
+        const x = (canvas.width / 2) + (diffAngulo * (canvas.width / 70));
+        
+        // MAPEO VERTICAL (Eje Y) - Calibración matemática basada en telemetría de 42°
+        // Limitamos la distancia visual efectiva a 100 metros (0.1 Km) para máxima precisión en terreno quebrado
+        const factorDistancia = Math.min(distanciaMigaja, 0.1) / 0.1;
+        
+        // Normalizamos la inclinación suavizada de tu mano
+        const inclinacionNormalizada = Math.max(10, Math.min(betaFiltrado.current, 80)); 
+        
+        // El horizonte visual se adapta dinámicamente según mires al suelo o al frente
+        const horizonteSuelo = canvas.height * (0.4 + (inclinacionNormalizada / 300));
+        const y = horizonteSuelo + (factorDistancia * (canvas.height * 0.45));
 
-          if (!lineaIniciada) {
-            ctx.moveTo(x, y);
-            lineaIniciada = true;
-          } else {
-            ctx.lineTo(x, y);
-          }
+        // Unimos de forma incondicional los puntos consecutivos del camino
+        if (!lineaIniciada) {
+          ctx.moveTo(x, y);
+          lineaIniciada = true;
+        } else {
+          ctx.lineTo(x, y);
         }
       }
       ctx.stroke();
     };
 
-    const intervalo = setInterval(loopRenderizado, 30); // 33 FPS para fluidez total en carrera
+    const intervalo = setInterval(loopRenderizado, 30);
     return () => clearInterval(intervalo);
   }, [modoCamara, posicionActual, migajas]);
 
