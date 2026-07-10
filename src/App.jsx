@@ -1,5 +1,5 @@
-import { useEffect, useState, useRef } from 'react';
 import { calcularDistancia, calcularRumbo } from './utils/geo';
+import { useEffect, useRef, useState } from 'react';
 
 function App() {
   const [puntoPartida, setPuntoPartida] = useState(null);
@@ -10,7 +10,7 @@ function App() {
   const [modoCamara, setModoCamara] = useState(false);
   const [migajas, setMigajas] = useState([]);
 
-  // FILTROS DE TELEMETRÍA (Datos reales de tus sensores en montaña)
+  // FILTROS DE SENSORES
   const brujulaFiltrada = useRef(0);
   const betaFiltrado = useRef(0);
 
@@ -64,7 +64,7 @@ function App() {
           if (!ultimaMigaja) return prevMigajas;
 
           const distALastMigaja = calcularDistancia(actual.lat, actual.lon, ultimaMigaja.lat, ultimaMigaja.lon);
-          // Nueva migaja cada 15 metros en el sendero
+          // Registra un hito estable cada 15 metros
           if (distALastMigaja > 0.015) { 
             const nuevasMigajas = [...prevMigajas, { lat: actual.lat, lon: actual.lon }];
             localStorage.setItem('migajas', JSON.stringify(nuevasMigajas));
@@ -90,7 +90,7 @@ function App() {
         if (diff > 180) diff -= 360;
         if (diff < -180) diff += 360;
         
-        brujulaFiltrada.current += diff * 0.15; // Amortiguación anti-shock
+        brujulaFiltrada.current += diff * 0.15; 
         betaFiltrado.current += (betaRaw - betaFiltrado.current) * 0.15;
       }
     };
@@ -118,7 +118,7 @@ function App() {
     activarCamara();
   }, [modoCamara]);
 
-  // 6. INTERFAZ GRÁFICA MIXTA: FLECHA TÁCTICA + GOTAS DE ENERGÍA FLOTANTES
+  // RENDERIZADO RA OPTIMIZADO CON IDENTIFICADOR DE GOTAS
   useEffect(() => {
     if (!modoCamara || !posicionActual || migajas.length < 1 || !canvasRef.current) return;
 
@@ -130,66 +130,85 @@ function App() {
       canvas.height = window.innerHeight;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // --- COMPONENTE 1: RENDERIZAR LAS ÚLTIMAS 4 GOTAS DE POSICIONAMIENTO ---
-      // Tomamos solo las últimas migajas para no saturar al senderista
-      const ultimasMigajas = migajas.slice(-4);
+      // --- GOTAS FLOTANTES DE ENERGÍA + LEYENDA NUMÉRICA ---
+      // Mostramos las últimas 4 migajas registradas
+      const indicesMostrar = [];
+      for (let i = Math.max(0, migajas.length - 4); i < migajas.length; i++) {
+        indicesMostrar.push(i);
+      }
       
-      ultimasMigajas.forEach((migaja, index) => {
+      indicesMostrar.forEach((migajaIndex) => {
+        const migaja = migajas[migajaIndex];
         const rumboGotita = calcularRumbo(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
         const distanciaGotita = calcularDistancia(posicionActual.lat, posicionActual.lon, migaja.lat, migaja.lon);
 
         let diffGotita = rumboGotita - brujulaFiltrada.current;
         diffGotita = ((diffGotita + 180) % 360) - 180;
 
-        // Solo dibujamos la gota si cae dentro del rango visual frontal de la pantalla
-        if (Math.abs(diffGotita) < 60) {
-          const gotaX = (canvas.width / 2) + (diffGotita * (canvas.width / 80));
-          
-          const factorDist = Math.min(distanciaGotita, 0.1) / 0.1;
-          const offsetInc = (betaFiltrado.current - 40) * 3;
-          const gotaY = (canvas.height * 0.5) + (factorDist * (canvas.height * 0.35)) - offsetInc;
+        // Si la gota está en el campo visual frontal
+        if (Math.abs(diffGotita) < 55) {
+          const gotaX = (canvas.width / 2) + (diffGotita * (canvas.width / 75));
+          const factorDist = Math.min(distanciaGotita, 0.08) / 0.08; // Rango visual de 80 metros
+          const offsetInc = (betaFiltrado.current - 40) * 3.5;
+          const gotaY = (canvas.height * 0.45) + (factorDist * (canvas.height * 0.4)) - offsetInc;
 
-          // Tamaño de la gota decreciente según la antigüedad del punto
-          const radioGota = (index + 1) * 3.5; 
+          const radioGota = 12 * (1 - factorDist * 0.5); // Escala visual por cercanía
 
           ctx.save();
           ctx.shadowBlur = 15;
           ctx.shadowColor = '#00E5FF';
           
-          // Anillo Exterior Holográfico
+          // Gota exterior holográfica
           ctx.beginPath();
           ctx.arc(gotaX, gotaY, radioGota + 6, 0, 2 * Math.PI);
-          ctx.strokeStyle = 'rgba(0, 229, 255, 0.4)';
+          ctx.strokeStyle = 'rgba(0, 229, 255, 0.3)';
           ctx.lineWidth = 2;
           ctx.stroke();
 
-          // Núcleo Sólido de la Gota
+          // Núcleo sólido
           ctx.beginPath();
           ctx.arc(gotaX, gotaY, radioGota, 0, 2 * Math.PI);
           ctx.fillStyle = '#00E5FF';
           ctx.fill();
+
+          // LEYENDA NUMÉRICA FLOTANTE DECRECIENTE
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 12px Arial';
+          ctx.textAlign = 'center';
+          // El punto 0 es la Base. Los siguientes son 1, 2, 3...
+          const textoEtiqueta = migajaIndex === 0 ? "BASE" : `PUNTO ${migajaIndex}`;
+          ctx.fillText(textoEtiqueta, gotaX, gotaY - (radioGota + 12));
+          
           ctx.restore();
         }
       });
 
-      // --- COMPONENTE 2: GRAN FLECHA CENTRAL EN EL SUELO ---
+      // --- GRAN FLECHA CENTRAL DE RUTA EN EL SUELO ---
+      // Apuntamos siempre al hito más reciente para guiar el camino desandado
       const destinoUltimo = migajas[migajas.length - 1];
       const rumboHaciaAtras = calcularRumbo(posicionActual.lat, posicionActual.lon, destinoUltimo.lat, destinoUltimo.lon);
-      const rotacionFlechaFinal = rumboHaciaAtras - brujulaFiltrada.current;
+      const distAlUltimo = calcularDistancia(posicionActual.lat, posicionActual.lon, destinoUltimo.lat, destinoUltimo.lon);
+
+      // Si estamos encima del punto (menos de 6 metros), congelamos rotación para evitar fluctuación loca
+      let rotacionFlechaFinal = rumboHaciaAtras - brujulaFiltrada.current;
+      if (distAlUltimo < 0.006) {
+        rotacionFlechaFinal = 0; 
+      }
 
       const centroX = canvas.width / 2;
       const offsetInclinacion = (betaFiltrado.current - 40) * 3;
-      const centroY = (canvas.height * 0.8) - offsetInclinacion;
+      const centroY = (canvas.height * 0.82) - offsetInclinacion;
 
       ctx.save();
       ctx.translate(centroX, centroY);
       ctx.rotate((rotacionFlechaFinal * Math.PI) / 180);
 
       ctx.lineWidth = 6;
-      ctx.strokeStyle = '#2196F3'; // Azul Eléctrico para diferenciarlo de las gotas
-      ctx.fillStyle = 'rgba(33, 150, 243, 0.25)';
+      ctx.strokeStyle = distAlUltimo < 0.006 ? '#4CAF50' : '#2196F3'; // Se vuelve verde cuando "absorbes" el punto
+      ctx.fillStyle = distAlUltimo < 0.006 ? 'rgba(76, 175, 80, 0.25)' : 'rgba(33, 150, 243, 0.25)';
       ctx.shadowBlur = 20;
-      ctx.shadowColor = '#2196F3';
+      ctx.shadowColor = distAlUltimo < 0.006 ? '#4CAF50' : '#2196F3';
 
       ctx.beginPath();
       ctx.moveTo(0, -65);
@@ -210,45 +229,46 @@ function App() {
     return () => clearInterval(intervalo);
   }, [modoCamara, posicionActual, migajas]);
 
-  // --- COMPONENTE 3: MOTOR DE GENERACIÓN DE MAPA PARA COMPARTIR ---
+  // COMPARTIR REDES: CORRECCIÓN DE MAPEO DE LÍNEA RECTA
   const compartirRutaRedes = () => {
     if (migajas.length < 2) return;
 
-    // Crear un canvas oculto en memoria para renderizar la imagen táctica
     const shareCanvas = document.createElement('canvas');
     shareCanvas.width = 600;
     shareCanvas.height = 600;
     const sCtx = shareCanvas.getContext('2d');
 
-    // Fondo Deportivo Tecnológico
-    sCtx.fillStyle = '#121212';
+    sCtx.fillStyle = '#1e1e24';
     sCtx.fillRect(0, 0, shareCanvas.width, shareCanvas.height);
 
-    // Rejilla de coordenadas de fondo (Estética Radar)
-    sCtx.strokeStyle = 'rgba(255,255,255,0.03)';
+    // Rejilla de Radar de fondo
+    sCtx.strokeStyle = 'rgba(255,255,255,0.04)';
     sCtx.lineWidth = 1;
-    for(let i=0; i<600; i+=40) {
+    for(let i=0; i<600; i+=50) {
       sCtx.beginPath(); sCtx.moveTo(i, 0); sCtx.lineTo(i, 600); sCtx.stroke();
       sCtx.beginPath(); sCtx.moveTo(0, i); sCtx.lineTo(600, i); sCtx.stroke();
     }
 
-    // Encontrar límites de la ruta para auto-centrar el mapa
     const lats = migajas.map(m => m.lat);
     const lons = migajas.map(m => m.lon);
-    const minLat = Math.min(...lats); const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons); const maxLon = Math.max(...lons);
     
+    let minLat = Math.min(...lats); let maxLat = Math.max(...lats);
+    let minLon = Math.min(...lons); let maxLon = Math.max(...lons);
+    
+    // CORRECCIÓN MATEMÁTICA: Si es una línea recta pura, forzamos un margen para evitar división por cero
+    if (maxLat - minLat < 0.0005) { minLat -= 0.0005; maxLat += 0.0005; }
+    if (maxLon - minLon < 0.0005) { minLon -= 0.0005; maxLon += 0.0005; }
+
     const mapPoint = (lat, lon) => {
-      const padding = 100;
-      const x = padding + ((lon - minLon) / (maxLon - minLon || 1)) * (600 - padding * 2);
-      // Invertimos Y para que el norte quede arriba
-      const y = (600 - padding) - ((lat - minLat) / (maxLat - minLat || 1)) * (600 - padding * 2);
+      const padding = 120;
+      const x = padding + ((lon - minLon) / (maxLon - minLon)) * (600 - padding * 2);
+      const y = (600 - padding) - ((lat - minLat) / (maxLat - minLat)) * (600 - padding * 2);
       return { x, y };
     };
 
-    // Dibujar el trazo del sendero realizado
+    // Dibujar trazo del Sendero Neón
     sCtx.strokeStyle = '#00E5FF';
-    sCtx.lineWidth = 6;
+    sCtx.lineWidth = 7;
     sCtx.lineCap = 'round';
     sCtx.lineJoin = 'round';
     sCtx.shadowBlur = 15;
@@ -262,33 +282,39 @@ function App() {
     });
     sCtx.stroke();
 
-    // Dibujar Base (Punto de Partida)
-    const ptBase = mapPoint(migajas[0].lat, migajas[0].lon);
-    sCtx.beginPath(); sCtx.arc(ptBase.x, ptBase.y, 10, 0, 2*Math.PI);
-    sCtx.fillStyle = '#4CAF50'; sCtx.fill();
-
-    // Textos Informativos de la Hazaña
+    // Marcar hitos en el mapa generado
     sCtx.shadowBlur = 0;
+    migajas.forEach((migaja, index) => {
+      const pt = mapPoint(migaja.lat, migaja.lon);
+      sCtx.beginPath();
+      sCtx.arc(pt.x, pt.y, index === 0 ? 9 : 5, 0, 2 * Math.PI);
+      sCtx.fillStyle = index === 0 ? '#4CAF50' : '#00E5FF';
+      sCtx.fill();
+    });
+
+    // Encabezado Deportivo
     sCtx.fillStyle = '#ffffff';
-    sCtx.font = 'bold 24px Arial';
-    sCtx.fillText("¡RETORNO SEGURO COMPLETADO! 🏔️", 40, 50);
+    sCtx.font = 'bold 26px Arial';
+    sCtx.fillText("¡RETORNO SEGURO COMPLETADO! 🏔️", 40, 55);
     
     sCtx.font = '14px Arial';
-    sCtx.fillStyle = '#888888';
-    sCtx.fillText(`Distancia total recorrida: ${distancia || 0} Km`, 40, 80);
-    sCtx.fillText(`Puntos de control verificados: ${migajas.length}`, 40, 100);
+    sCtx.fillStyle = '#aaaaaa';
+    sCtx.fillText(`Distancia total de la travesía: ${distancia || 0} Km`, 40, 90);
+    sCtx.fillText(`Puntos de control superados: ${migajas.length - 1}`, 40, 110);
 
-    // --- ZONA ESTRATÉGICA DE SPONSORS FUTUROS ---
-    sCtx.fillStyle = 'rgba(255,255,255,0.05)';
-    sCtx.fillRect(40, 510, 520, 60);
-    sCtx.fillStyle = '#aaa';
-    sCtx.font = 'italic italic 12px Arial';
-    sCtx.fillText("Espacio para Sponsors: Casa de Deportes / Municipio / Agua Mineral", 120, 545);
+    // PANEL DE SPONSORS ESTRATÉGICO
+    sCtx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+    sCtx.fillRect(40, 500, 520, 65);
+    sCtx.fillStyle = '#00E5FF';
+    sCtx.font = 'bold 11px Arial';
+    sCtx.fillText("SPONSORS OFICIALES:", 55, 522);
+    sCtx.fillStyle = '#ffffff';
+    sCtx.font = 'italic 13px Arial';
+    sCtx.fillText("Casa de Deportes / Municipio Local / Agua Mineral de Montaña", 55, 545);
 
-    // Lanzar descarga directa de la imagen para compartir en Instagram/WhatsApp
     const imageURI = shareCanvas.toDataURL("image/png");
     const link = document.createElement('a');
-    link.download = `Mi_Ruta_Cerro_${Date.now()}.png`;
+    link.download = `Ruta_Cerro_Seguro_${Date.now()}.png`;
     link.href = imageURI;
     link.click();
   };
@@ -297,8 +323,8 @@ function App() {
   const errorDireccion = ((rotacionMiniBrujula + 180) % 360) - 180;
   const estaDesviado = rumbo !== null && Math.abs(errorDireccion) > 45;
 
-  // El botón de redes aparece si estamos de vuelta cerca del origen (< 30 metros) y caminamos algo
-  const listoParaCompartir = distancia !== null && parseFloat(distancia) < 0.03 && migajas.length > 3;
+  // Se activa el botón al estar cerca de la base (< 30 metros) tras registrar camino
+  const listoParaCompartir = distancia !== null && parseFloat(distancia) < 0.03 && migajas.length > 2;
 
   return (
     <div style={{ padding: '20px', fontFamily: 'Arial, sans-serif', textAlign: 'center', backgroundColor: modoCamara ? 'transparent' : '#121212', color: '#e0e0e0', minHeight: '100vh', position: 'relative' }}>
@@ -310,7 +336,7 @@ function App() {
         </>
       )}
 
-      <h1 style={{ fontSize: '24px', color: '#4CAF50', margin: '5px 0', textShadow: modoCamara ? '0 2px 4px black' : 'none' }}>Retorno Seguro RA 🛰️</h1>
+      <h1 style={{ fontSize: '24px', color: '#4CAF50', margin: '5px 0', textShadow: modoCamara ? '0 2px 4px black' : 'none' }}>Retorno Seguro RA 🏔️</h1>
 
       {!puntoPartida ? (
         <div style={{ marginTop: '80px' }}>
@@ -324,24 +350,22 @@ function App() {
             {modoCamara ? "🔋 Activar Modo Económico" : "📷 Activar Vista Holográfica RA"}
           </button>
 
-          {/* GRAN BOTÓN SOCIAL REVELADO AL VOLVER A LA BASE */}
           {listoParaCompartir && (
             <button onClick={compartirRutaRedes} style={{ padding: '14px 28px', margin: '10px', fontSize: '15px', fontWeight: 'bold', backgroundColor: '#FF9800', color: 'white', border: 'none', borderRadius: '25px', cursor: 'pointer', boxShadow: '0 4px 15px rgba(255,152,0,0.5)', zIndex: 10, position: 'relative' }}>
-              🔥 Compartir Mapa del Recorrido
+              🔥 Compartir Mapa de Logros
             </button>
           )}
 
           <div style={{ backgroundColor: 'rgba(20,20,20,0.85)', padding: '10px', borderRadius: '10px', maxWidth: '240px', margin: '10px auto', border: '1px solid #333' }}>
             <span style={{ fontSize: '12px', color: '#aaa' }}>AL ORIGEN: <b>{distancia ? `${distancia} Km` : 'Calculando...'}</b></span>
             <br />
-            <span style={{ fontSize: '12px', color: '#00E5FF' }}>💧 Gotas en Ruta: {migajas.length}</span>
+            <span style={{ fontSize: '12px', color: '#00E5FF' }}>👣 Gotas Recolectables: {migajas.length}</span>
           </div>
 
           {estaDesviado && modoCamara && (
             <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', border: '12px solid rgba(255,107,107,0.5)', boxSizing: 'border-box', pointerEvents: 'none', zIndex: 5 }} />
           )}
 
-          {/* BRÚJULA HUD FLOTANTE DE RESPALDO */}
           <div style={{ position: 'fixed', bottom: '25px', right: '25px', width: '75px', height: '75px', borderRadius: '50%', backgroundColor: 'rgba(0,0,0,0.8)', border: estaDesviado ? '2px solid #ff6b6b' : '2px solid #4CAF50', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10 }}>
             <svg style={{ width: '40px', height: '40px', transform: `rotate(${rotacionMiniBrujula}deg)`, fill: estaDesviado ? '#ff6b6b' : '#4CAF50' }} viewBox="0 0 24 24">
               <path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
